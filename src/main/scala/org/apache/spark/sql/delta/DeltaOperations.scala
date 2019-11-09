@@ -22,7 +22,7 @@ import org.apache.spark.sql.delta.util.JsonUtils
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.catalyst.analysis.UnresolvedAttribute
 import org.apache.spark.sql.streaming.OutputMode
-import org.apache.spark.sql.types.{DataType, Metadata => MetadataType, StructField, StructType}
+import org.apache.spark.sql.types.{StructField, StructType}
 
 /**
  * Exhaustive list of operations that can be performed on a Delta table. These operations are
@@ -75,11 +75,12 @@ object DeltaOperations {
   case class Convert(
       numFiles: Long,
       partitionBy: Seq[String],
-      collectStats: Boolean) extends Operation("CONVERT") {
+      collectStats: Boolean,
+      catalogTable: Option[String]) extends Operation("CONVERT") {
     override val parameters: Map[String, Any] = Map(
       "numFiles" -> numFiles,
       "partitionedBy" -> JsonUtils.toJson(partitionBy),
-      "collectStats" -> collectStats)
+      "collectStats" -> collectStats) ++ catalogTable.map("catalogTable" -> _)
   }
   /** Recorded when optimizing the table. */
   case class Optimize(

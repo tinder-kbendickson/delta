@@ -19,16 +19,17 @@ package org.apache.spark.sql.delta
 import java.io.File
 import java.util.Locale
 
-
+import org.apache.spark.sql.delta.actions.CommitInfo
+import org.apache.commons.io.FileUtils
 import org.scalatest.time.SpanSugar._
 
 import org.apache.spark.sql._
 import org.apache.spark.sql.execution.DataSourceScanExec
-import org.apache.spark.sql.execution.datasources.{FilePartition, FileScanRDD, HadoopFsRelation, LogicalRelation}
+import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.execution.streaming.MemoryStream
 import org.apache.spark.sql.functions._
-import org.apache.spark.sql.streaming.{StreamingQueryException, StreamTest}
-import org.apache.spark.sql.types.{IntegerType, StructField, StructType}
+import org.apache.spark.sql.streaming._
+import org.apache.spark.sql.types._
 
 class DeltaSinkSuite extends StreamTest {
 
@@ -168,7 +169,7 @@ class DeltaSinkSuite extends StreamTest {
         .start(outputDir.getCanonicalPath)
 
       try {
-        // The output is partitoned by "value", so the value will appear in the file path.
+        // The output is partitioned by "value", so the value will appear in the file path.
         // This is to test if we handle spaces in the path correctly.
         inputData.addData("hello world")
         failAfter(streamingTimeout) {
@@ -208,14 +209,14 @@ class DeltaSinkSuite extends StreamTest {
         assert(outputDf.schema === expectedSchema)
 
         // Verify the correct partitioning schema has been inferred
-        val hadoopdFsRelations = outputDf.queryExecution.analyzed.collect {
+        val hadoopFsRelations = outputDf.queryExecution.analyzed.collect {
           case LogicalRelation(baseRelation, _, _, _) if
               baseRelation.isInstanceOf[HadoopFsRelation] =>
             baseRelation.asInstanceOf[HadoopFsRelation]
         }
-        assert(hadoopdFsRelations.size === 1)
-        assert(hadoopdFsRelations.head.partitionSchema.exists(_.name == "id"))
-        assert(hadoopdFsRelations.head.dataSchema.exists(_.name == "value"))
+        assert(hadoopFsRelations.size === 1)
+        assert(hadoopFsRelations.head.partitionSchema.exists(_.name == "id"))
+        assert(hadoopFsRelations.head.dataSchema.exists(_.name == "value"))
 
         // Verify the data is correctly read
         checkDatasetUnorderly(
@@ -422,6 +423,87 @@ class DeltaSinkSuite extends StreamTest {
         query.awaitTermination(10000)
       }
       assert(e.cause.isInstanceOf[AnalysisException])
+    }
+  }
+
+  test("streaming write correctly sets isBlindAppend in CommitInfo") {
+    withTempDirs { (outputDir, checkpointDir) =>
+
+      val input = MemoryStream[Int]
+      val inputDataStream = input.toDF().toDF("value")
+
+      def tableData: DataFrame = spark.read.format("delta").load(outputDir.toString)
+
+      def appendToTable(df: DataFrame): Unit = failAfter(streamingTimeout) {
+        var q: StreamingQuery = null
+        try {
+          input.addData(0)
+          q = df.writeStream
+            .format("delta")
+            .option("checkpointLocation", checkpointDir.toString)
+            .start(outputDir.toString)
+          q.processAllAvailable()
+        } finally {
+          if (q != null) q.stop()
+        }
+      }
+
+      var lastCheckedVersion = -1L
+      def isLastCommitBlindAppend: Boolean = {
+        val log = DeltaLog.forTable(spark, outputDir.toString)
+        val lastVersion = log.update().version
+        assert(lastVersion > lastCheckedVersion, "no new commit was made")
+        lastCheckedVersion = lastVersion
+        val lastCommitChanges = log.getChanges(lastVersion).toSeq.head._2
+        lastCommitChanges.collectFirst { case c: CommitInfo => c }.flatMap(_.isBlindAppend).get
+      }
+
+      // Simple streaming write should have isBlindAppend = true
+      appendToTable(inputDataStream)
+      assert(
+        isLastCommitBlindAppend,
+        "simple write to target table should have isBlindAppend = true")
+
+      // Join with the table should have isBlindAppend = false
+      appendToTable(inputDataStream.join(tableData, "value"))
+      assert(
+        !isLastCommitBlindAppend,
+        "joining with target table in the query should have isBlindAppend = false")
+    }
+  }
+
+  test("do not trust user nullability, so that parquet files aren't corrupted") {
+    val jsonRec = """{"s": "ss", "b": {"s": "ss"}}"""
+    val schema = new StructType()
+      .add("s", StringType)
+      .add("b", new StructType()
+        .add("s", StringType)
+        .add("i", IntegerType, nullable = false))
+      .add("c", IntegerType, nullable = false)
+
+    withTempDir { base =>
+      val sourceDir = new File(base, "source").getCanonicalPath
+      val tableDir = new File(base, "output").getCanonicalPath
+      val chkDir = new File(base, "checkpoint").getCanonicalPath
+
+      FileUtils.write(new File(sourceDir, "a.json"), jsonRec)
+
+      val q = spark.readStream
+        .format("json")
+        .schema(schema)
+        .load(sourceDir)
+        .withColumn("file", input_file_name()) // Not sure why needs this to reproduce
+        .writeStream
+        .format("delta")
+        .trigger(org.apache.spark.sql.streaming.Trigger.Once)
+        .option("checkpointLocation", chkDir)
+        .start(tableDir)
+
+      q.awaitTermination()
+
+      checkAnswer(
+        spark.read.format("delta").load(tableDir).drop("file"),
+        Seq(Row("ss", Row("ss", null), null)))
     }
   }
 }

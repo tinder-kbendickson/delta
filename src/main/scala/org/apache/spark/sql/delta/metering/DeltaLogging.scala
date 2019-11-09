@@ -24,7 +24,6 @@ import com.databricks.spark.util.MetricDefinitions.{EVENT_LOGGING_FAILURE, EVENT
 import com.databricks.spark.util.TagDefinitions.{TAG_OP_TYPE, TAG_TAHOE_ID, TAG_TAHOE_PATH}
 import org.apache.spark.sql.delta.DeltaLog
 import org.apache.spark.sql.delta.util.DeltaProgressReporter
-
 import org.apache.spark.sql.delta.util.JsonUtils
 
 /**
@@ -44,15 +43,14 @@ import org.apache.spark.sql.delta.util.JsonUtils
  *    that match "delta.ddl.%".
  *
  *  Underneath these functions use the standard usage log reporting defined in
- *  [[com.databricks.spark.util.UsageLogging]].
+ *  [[com.databricks.spark.util.DatabricksLogging]].
  */
 trait DeltaLogging
   extends DeltaProgressReporter
-  
   with DatabricksLogging {
 
   /**
-   * Used to record the occurence of a single event or report detailed, operation specific
+   * Used to record the occurrence of a single event or report detailed, operation specific
    * statistics.
    */
   protected def recordDeltaEvent(

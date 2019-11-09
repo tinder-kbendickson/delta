@@ -41,7 +41,9 @@ object MetricDefinitions {
 }
 
 trait DatabricksLogging {
+  // scalastyle:off println
   def logConsole(line: String): Unit = println(line)
+  // scalastyle:on println
 
   def recordUsage(
       metric: MetricDefinition,

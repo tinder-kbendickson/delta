@@ -17,13 +17,11 @@
 package org.apache.spark.sql.delta.commands
 
 // scalastyle:off import.ordering.noEmptyLine
-
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.delta.actions.{Action, AddFile}
 import org.apache.spark.sql.delta.schema.ImplicitMetadataOperation
 
 import org.apache.spark.sql._
-
 import org.apache.spark.sql.execution.command.RunnableCommand
 
 /**
@@ -53,7 +51,6 @@ case class WriteIntoDelta(
     data: DataFrame)
   extends RunnableCommand
   with ImplicitMetadataOperation
-  
   with DeltaCommand {
 
   override protected val canMergeSchema: Boolean = options.canMergeSchema
@@ -63,13 +60,12 @@ case class WriteIntoDelta(
   override protected val canOverwriteSchema: Boolean =
     options.canOverwriteSchema && isOverwriteOperation && options.replaceWhere.isEmpty
 
-  override def run(sparkSession: SparkSession): Seq[Row] =  {
-    val txn = deltaLog.startTransaction()
-    val actions = write(txn, sparkSession)
-    val operation =
-      DeltaOperations.Write(mode, Option(partitionColumns), options.replaceWhere)
-
-    txn.commit(actions, operation)
+  override def run(sparkSession: SparkSession): Seq[Row] = {
+    deltaLog.withNewTransaction { txn =>
+      val actions = write(txn, sparkSession)
+      val operation = DeltaOperations.Write(mode, Option(partitionColumns), options.replaceWhere)
+      txn.commit(actions, operation)
+    }
     Seq.empty
   }
 
@@ -126,6 +122,12 @@ case class WriteIntoDelta(
       case _ => Nil
     }
 
-    newFiles ++ deletedFiles
+    val rearrangeOnly = options.rearrangeOnly
+    if (rearrangeOnly) {
+      newFiles.map(_.copy(dataChange = !rearrangeOnly)) ++
+        deletedFiles.map(_.copy(dataChange = !rearrangeOnly))
+    } else {
+      newFiles ++ deletedFiles
+    }
   }
 }

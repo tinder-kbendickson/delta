@@ -22,7 +22,6 @@ import org.json4s._
 import org.json4s.jackson.JsonMethods.parse
 
 import org.apache.spark.sql.execution.streaming.{Offset, SerializedOffset}
-import org.apache.spark.util.Utils
 
 /**
  * Tracks how far we processed in when reading changes from the [[DeltaLog]].
@@ -49,7 +48,7 @@ case class DeltaSourceOffset(
     index: Long,
     isStartingVersion: Boolean) extends Offset {
 
-  override val json = JsonUtils.toJson(this)
+  override def json: String = JsonUtils.toJson(this)
 }
 
 object DeltaSourceOffset {

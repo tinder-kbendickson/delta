@@ -24,7 +24,6 @@ import java.util.{Calendar, Date, TimeZone}
 import scala.concurrent.duration._
 import scala.language.implicitConversions
 
-
 import org.apache.spark.sql.delta.DeltaHistoryManager.BufferingLogDeletionIterator
 import org.apache.spark.sql.delta.actions.AddFile
 import org.apache.spark.sql.delta.util.FileNames
@@ -32,10 +31,11 @@ import org.apache.commons.lang3.time.DateUtils
 import org.apache.hadoop.fs.{FileStatus, Path}
 
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row}
-import org.apache.spark.sql.test.SharedSQLContext
+import org.apache.spark.sql.test.{SharedSparkSession, SQLTestUtils}
 import org.apache.spark.util.ManualClock
 
-class DeltaTimeTravelSuite extends QueryTest with SharedSQLContext {
+class DeltaTimeTravelSuite extends QueryTest
+  with SharedSparkSession  with SQLTestUtils {
 
   import testImplicits._
 
@@ -54,6 +54,11 @@ class DeltaTimeTravelSuite extends QueryTest with SharedSQLContext {
     if (crc.exists()) {
       crc.setLastModified(ts)
     }
+  }
+
+  private def modifyCheckpointTimestamp(deltaLog: DeltaLog, version: Long, ts: Long): Unit = {
+    val file = new File(FileNames.checkpointFileSingular(deltaLog.logPath, version).toUri)
+    file.setLastModified(ts)
   }
 
   /** Generate commits with the given timestamp in millis. */
@@ -195,9 +200,11 @@ class DeltaTimeTravelSuite extends QueryTest with SharedSQLContext {
 
       // we need this checkpoint so that we can delete starting with the first version
       deltaLog.checkpoint()
+      modifyCheckpointTimestamp(deltaLog, deltaLog.snapshot.version, time)
       generateCommitsCheap(deltaLog, Seq(5, 10, 7, 8, 14).map(time + _.seconds): _*)
       // We need this checkpoint so that we can delete up to the last version
       deltaLog.checkpoint()
+      modifyCheckpointTimestamp(deltaLog, deltaLog.snapshot.version, time + 14.seconds)
 
       assert(deltaLog.history.getHistory(0, None).map(_.timestamp.getTime).reverse ===
         Seq(time, time + 5.seconds,
@@ -656,6 +663,30 @@ class DeltaTimeTravelSuite extends QueryTest with SharedSQLContext {
       checkAnswer(
         spark.read.format("delta").load(identifierWithVersion(tblLoc, 0)),
         spark.range(10).toDF())
+    }
+  }
+
+  test("time travel with partition changes - should instantiate old schema") {
+    withTempDir { dir =>
+      val tblLoc = dir.getCanonicalPath
+      val v0 = spark.range(10).withColumn("part5", 'id % 5)
+
+      v0.write.format("delta").partitionBy("part5").mode("append").save(tblLoc)
+      spark.range(10, 20).withColumn("part2", 'id % 2)
+        .write
+        .format("delta")
+        .partitionBy("part2")
+        .mode("overwrite")
+        .option("overwriteSchema", true)
+        .save(tblLoc)
+
+      checkAnswer(
+        spark.read.option("versionAsOf", 0).format("delta").load(tblLoc),
+        v0)
+
+      checkAnswer(
+        spark.read.format("delta").load(identifierWithVersion(tblLoc, 0)),
+        v0)
     }
   }
 }

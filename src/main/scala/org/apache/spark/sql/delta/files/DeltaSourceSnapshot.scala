@@ -20,7 +20,7 @@ import org.apache.spark.sql.delta.{DeltaLog, DeltaTableUtils, Snapshot}
 import org.apache.spark.sql.delta.sources.IndexedFile
 import org.apache.spark.sql.delta.util.StateCache
 
-import org.apache.spark.sql.{DataFrame, Dataset, SparkSession}
+import org.apache.spark.sql.{Dataset, SparkSession}
 import org.apache.spark.sql.catalyst.expressions.Expression
 import org.apache.spark.sql.functions.lit
 
@@ -37,7 +37,6 @@ class DeltaSourceSnapshot(
     val snapshot: Snapshot,
     val filters: Seq[Expression])
   extends SnapshotIterator
-  
   with StateCache {
 
   protected val version = snapshot.version
@@ -50,15 +49,17 @@ class DeltaSourceSnapshot(
     }
   }
 
-  protected def initalFiles: Dataset[IndexedFile] = {
+  protected def initialFiles: Dataset[IndexedFile] = {
     import spark.implicits._
-    snapshot.allFiles.sort("modificationTime", "path")
-      .rdd.zipWithIndex()
-      .toDF("add", "index")
-      .withColumn("version", lit(version))
-      .withColumn("isLast", lit(false))
-      .as[IndexedFile]
-      .rddCache(s"Delta Source Snapshot #$version - ${snapshot.redactedPath}")
+
+    cacheDS(
+      snapshot.allFiles.sort("modificationTime", "path")
+        .rdd.zipWithIndex()
+        .toDF("add", "index")
+        .withColumn("version", lit(version))
+        .withColumn("isLast", lit(false))
+        .as[IndexedFile],
+      s"Delta Source Snapshot #$version - ${snapshot.redactedPath}").getDS
   }
 
   override def close(unpersistSnapshot: Boolean): Unit = {
@@ -80,7 +81,7 @@ trait SnapshotIterator {
     if (result == null) {
       result = DeltaLog.filterFileList(
         snapshot.metadata.partitionColumns,
-        initalFiles.toDF(),
+        initialFiles.toDF(),
         partitionFilters,
         Seq("add")).as[IndexedFile].collect().toIterable
     }

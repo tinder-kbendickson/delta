@@ -16,6 +16,7 @@
 
 package org.apache.spark.sql.delta
 
+// scalastyle:off import.ordering.noEmptyLine
 import java.io.FileNotFoundException
 import java.util.ConcurrentModificationException
 
@@ -46,7 +47,6 @@ trait DocsPath {
  */
 object DeltaErrors
     extends DocsPath
-    
     with DeltaLogging {
 
   def baseDocsPath(spark: SparkSession): String = baseDocsPath(spark.sparkContext.getConf)
@@ -81,6 +81,14 @@ object DeltaErrors
 
   def formatSchema(schema: StructType): String = schema.treeString
 
+  def analysisException(
+      msg: String,
+      line: Option[Int] = None,
+      startPosition: Option[Int] = None,
+      plan: Option[LogicalPlan] = None,
+      cause: Option[Throwable] = None): AnalysisException = {
+    new AnalysisException(msg, line, startPosition, plan, cause)
+  }
 
   def notNullInvariantException(invariant: Invariant): Throwable = {
     new InvariantViolationException(s"Column ${UnresolvedAttribute(invariant.column).name}" +
@@ -92,6 +100,7 @@ object DeltaErrors
     new AnalysisException("Specifying static partitions in the partition spec is" +
       " currently not supported during inserts")
   }
+
 
   def operationNotSupportedException(
       operation: String, tableIdentifier: TableIdentifier): Throwable = {
@@ -164,6 +173,10 @@ object DeltaErrors
     new AnalysisException(
       s"Ambiguous partition column ${formatColumn(columnName)} can be" +
         s" ${formatColumnList(colMatches.map(_.name))}.")
+  }
+
+  def tableNotSupportedException(operation: String): Throwable = {
+    new AnalysisException(s"Table is not supported in $operation. Please use a path instead.")
   }
 
   def vacuumBasePathMissingException(baseDeltaPath: Path): Throwable = {
@@ -431,6 +444,23 @@ object DeltaErrors
       s"In subquery is not supported in the $operation condition.")
   }
 
+  def convertMetastoreMetadataMismatchException(
+      tableProperties: Map[String, String],
+      deltaConfiguration: Map[String, String]): Throwable = {
+    def prettyMap(m: Map[String, String]): String = {
+      m.map(e => s"${e._1}=${e._2}").mkString("[", ", ", "]")
+    }
+    new AnalysisException(
+      s"""You are trying to convert a table which already has a delta log where the table
+         |properties in the catalog don't match the configuration in the delta log.
+         |Table properties in catalog: ${prettyMap(tableProperties)}
+         |Delta configuration: ${prettyMap{deltaConfiguration}}
+         |If you would like to merge the configurations (update existing fields and insert new
+         |ones), set the SQL configuration
+         |spark.databricks.delta.convert.metadataCheck.enabled to false.
+       """.stripMargin)
+  }
+
   def createExternalTableWithoutLogException(
       path: Path, tableName: String, spark: SparkSession): Throwable = {
     new AnalysisException(
@@ -465,6 +495,59 @@ object DeltaErrors
          |
          |To learn more about Delta, see ${baseDocsPath(spark)}/delta/index.html
        """.stripMargin)
+  }
+
+  def createTableWithDifferentSchemaException(
+      path: Path,
+      specifiedSchema: StructType,
+      existingSchema: StructType,
+      diffs: Seq[String]): Throwable = {
+    new AnalysisException(
+      s"""The specified schema does not match the existing schema at $path.
+         |
+         |== Specified ==
+         |${specifiedSchema.treeString}
+         |
+         |== Existing ==
+         |${existingSchema.treeString}
+         |
+         |== Differences==
+         |${diffs.map("\n".r.replaceAllIn(_, "\n  ")).mkString("- ", "\n- ", "")}
+         |
+         |If your intention is to keep the existing schema, you can omit the
+         |schema from the create table command. Otherwise please ensure that
+         |the schema matches.
+        """.stripMargin)
+  }
+
+  def createTableWithDifferentPartitioningException(
+      path: Path,
+      specifiedColumns: Seq[String],
+      existingColumns: Seq[String]): Throwable = {
+    new AnalysisException(
+      s"""The specified partitioning does not match the existing partitioning at $path.
+         |
+         |== Specified ==
+         |${specifiedColumns.mkString(", ")}
+         |
+         |== Existing ==
+         |${existingColumns.mkString(", ")}
+        """.stripMargin)
+  }
+
+  def createTableWithDifferentPropertiesException(
+      path: Path,
+      specifiedProperties: Map[String, String],
+      existingProperties: Map[String, String]): Throwable = {
+    new AnalysisException(
+      s"""The specified properties do not match the existing properties at $path.
+         |
+         |== Specified ==
+         |${specifiedProperties.map { case (k, v) => s"$k=$v" }.mkString("\n")}
+         |
+         |== Existing ==
+         |${existingProperties.map { case (k, v) => s"$k=$v" }.mkString("\n")}
+        """.stripMargin)
   }
 
   def aggsNotSupportedException(op: String, cond: Expression): Throwable = {
@@ -541,9 +624,9 @@ object DeltaErrors
       s"Please rewrite your target as parquet.`$path` if it's a parquet directory.")
   }
 
-  def convertNonParquetFilesException(path: String, sourceName: String): Throwable = {
-    new AnalysisException("CONVERT TO DELTA only supports parquet files, but you are trying to " +
-      s"convert a $sourceName source: `$sourceName`.`$path`")
+  def convertNonParquetTablesException(ident: TableIdentifier, sourceName: String): Throwable = {
+    new AnalysisException("CONVERT TO DELTA only supports parquet tables, but you are trying to " +
+      s"convert a $sourceName source: $ident")
   }
 
   def unexpectedPartitionColumnFromFileNameException(
@@ -605,6 +688,15 @@ abstract class DeltaConcurrentModificationException(message: String)
 }
 
 /**
+ * Thrown when a concurrent transaction has written data after the current transaction read the
+ * table.
+ */
+class ConcurrentWriteException(
+    conflictingCommit: Option[CommitInfo]) extends DeltaConcurrentModificationException(
+  s"A concurrent transaction has written new data since the current transaction " +
+    s"read the table. Please try the operation again.", conflictingCommit)
+
+/**
  * Thrown when the metadata of the Delta table has changed between the time of read
  * and the time of commit.
  */
@@ -625,9 +717,10 @@ class ProtocolChangedException(
 /** Thrown when files are added that would have been read by the current transaction. */
 class ConcurrentAppendException(
     conflictingCommit: Option[CommitInfo],
-    partition: String) extends DeltaConcurrentModificationException(
+    partition: String,
+    customRetryMsg: Option[String] = None) extends DeltaConcurrentModificationException(
   s"Files were added to $partition by a concurrent update. " +
-    "Please try the operation again.", conflictingCommit)
+    customRetryMsg.getOrElse("Please try the operation again."), conflictingCommit)
 
 /** Thrown when the current transaction reads data that was deleted by a concurrent transaction. */
 class ConcurrentDeleteReadException(

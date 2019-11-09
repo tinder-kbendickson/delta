@@ -33,7 +33,10 @@ import org.apache.spark.util.Utils
  * 1. Atomic visibility of files: Any file written through this store must
  *    be made visible atomically. In other words, this should not generate partial files.
  *
- * 2. Consistent listing: Once a file has been written in a directory, all future listings for
+ * 2. Mutual exclusion: Only one writer must be able to create (or rename) a file at the final
+ *    destination.
+ *
+ * 3. Consistent listing: Once a file has been written in a directory, all future listings for
  *    that directory must return that file.
  */
 trait LogStore {
@@ -79,31 +82,45 @@ trait LogStore {
   def resolvePathOnPhysicalStorage(path: Path): Path = {
     throw new UnsupportedOperationException()
   }
+
+  /**
+   * Whether a partial write is visible when writing to `path`.
+   *
+   * As this depends on the underlying file system implementations, we require the input of `path`
+   * here in order to identify the underlying file system, even though in most cases a log store
+   * only deals with one file system.
+   *
+   * The default value is only provided here for legacy reasons, which will be removed.
+   * Any LogStore implementation should override this instead of relying on the default.
+   */
+  def isPartialWriteVisible(path: Path): Boolean = true
 }
 
-object LogStore extends Logging {
-
-  val DEFAULT_LOGSTORE_CLASS = {
-      classOf[HDFSLogStoreImpl].getName
-  }
+object LogStore extends LogStoreProvider
+  with Logging {
 
   def apply(sc: SparkContext): LogStore = {
     apply(sc.getConf, sc.hadoopConfiguration)
   }
 
   def apply(sparkConf: SparkConf, hadoopConf: Configuration): LogStore = {
-    val logStoreClass = Utils.classForName(sparkConf.get(
-      "spark.databricks.tahoe.logStore.class",
-      DEFAULT_LOGSTORE_CLASS))
-    logInfo("LogStore class: " + logStoreClass)
-    logStoreClass.getConstructor(classOf[SparkConf], classOf[Configuration])
-      .newInstance(sparkConf, hadoopConf).asInstanceOf[LogStore]
+    createLogStore(sparkConf, hadoopConf)
   }
 }
 
 trait LogStoreProvider {
+  val logStoreClassConfKey: String = "spark.delta.logStore.class"
+  val defaultLogStoreClass: String = classOf[HDFSLogStore].getName
+
   def createLogStore(spark: SparkSession): LogStore = {
-    LogStore(spark.sparkContext)
+    val sc = spark.sparkContext
+    createLogStore(sc.getConf, sc.hadoopConfiguration)
+  }
+
+  def createLogStore(sparkConf: SparkConf, hadoopConf: Configuration): LogStore = {
+    val logStoreClassName = sparkConf.get(logStoreClassConfKey, defaultLogStoreClass)
+    val logStoreClass = Utils.classForName(logStoreClassName)
+    logStoreClass.getConstructor(classOf[SparkConf], classOf[Configuration])
+      .newInstance(sparkConf, hadoopConf).asInstanceOf[LogStore]
   }
 }
-

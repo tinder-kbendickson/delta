@@ -20,7 +20,7 @@ import java.net.URI
 import java.sql.Timestamp
 
 import org.apache.spark.sql.delta.util.JsonUtils
-import com.fasterxml.jackson.annotation.JsonIgnore
+import com.fasterxml.jackson.annotation.{JsonIgnore, JsonInclude}
 import com.fasterxml.jackson.core.JsonGenerator
 import com.fasterxml.jackson.databind.{JsonSerializer, SerializerProvider}
 import com.fasterxml.jackson.databind.annotation.{JsonDeserialize, JsonSerialize}
@@ -65,7 +65,7 @@ sealed trait Action {
 /**
  * Used to block older clients from reading or writing the log when backwards
  * incompatible changes are made to the protocol. Readers and writers are
- * responsible for checking that the meet the minimum versions before performing
+ * responsible for checking that they meet the minimum versions before performing
  * any other operations.
  *
  * Since this action allows us to explicitly block older clients in the case of a
@@ -107,6 +107,7 @@ sealed trait FileAction extends Action {
  */
 case class AddFile(
     path: String,
+    @JsonInclude(JsonInclude.Include.ALWAYS)
     partitionValues: Map[String, String],
     size: Long,
     modificationTime: Long,
@@ -251,14 +252,15 @@ case class CommitInfo(
     clusterId: Option[String],
     @JsonDeserialize(contentAs = classOf[java.lang.Long])
     readVersion: Option[Long],
-    isolationLevel: Option[String]) extends Action with CommitMarker {
+    isolationLevel: Option[String],
+    /** Whether this commit has blindly appended without caring about existing files */
+    isBlindAppend: Option[Boolean]) extends Action with CommitMarker {
   override def wrap: SingleAction = SingleAction(commitInfo = this)
 
   override def withTimestamp(timestamp: Long): CommitInfo = {
     this.copy(timestamp = new Timestamp(timestamp))
   }
 
-  @JsonIgnore
   override def getTimestamp: Long = timestamp.getTime
   @JsonIgnore
   override def getVersion: Long = version.get
@@ -293,13 +295,18 @@ object NotebookInfo {
 }
 
 object CommitInfo {
+  def empty(version: Option[Long] = None): CommitInfo = {
+    CommitInfo(version, null, None, None, null, null, None, None, None, None, None, None)
+  }
+
   def apply(
       time: Long,
       operation: String,
       operationParameters: Map[String, String],
       commandContext: Map[String, String],
       readVersion: Option[Long],
-      isolationLevel: Option[String]): CommitInfo = {
+      isolationLevel: Option[String],
+      isBlindAppend: Option[Boolean]): CommitInfo = {
     val getUserName = commandContext.get("user").flatMap {
       case "unknown" => None
       case other => Option(other)
@@ -316,7 +323,8 @@ object CommitInfo {
       NotebookInfo.fromContext(commandContext),
       commandContext.get("clusterId"),
       readVersion,
-      isolationLevel
+      isolationLevel,
+      isBlindAppend
     )
   }
 }

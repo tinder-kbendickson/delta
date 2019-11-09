@@ -16,7 +16,7 @@
 
 package org.apache.spark.sql.delta
 
-import java.util.{Calendar, Date, TimeZone}
+import java.util.{Calendar, TimeZone}
 
 import org.apache.spark.sql.delta.DeltaHistoryManager.BufferingLogDeletionIterator
 import org.apache.spark.sql.delta.metering.DeltaLogging
@@ -72,7 +72,7 @@ trait MetadataCleanup extends DeltaLogging {
     val latestCheckpoint = lastCheckpoint
     if (latestCheckpoint.isEmpty) return Iterator.empty
     val threshold = latestCheckpoint.get.version - 1L
-    val files = store.listFrom(deltaFile(logPath, 0))
+    val files = store.listFrom(checkpointPrefix(logPath, 0))
       .filter(f => isCheckpointFile(f.getPath) || isDeltaFile(f.getPath))
     def getVersion(filePath: Path): Long = {
       if (isCheckpointFile(filePath)) {

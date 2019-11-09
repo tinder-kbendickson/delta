@@ -16,7 +16,6 @@
 
 package org.apache.spark.sql.delta.files
 
-// scalastyle:off import.ordering.noEmptyLine
 import java.net.URI
 
 import org.apache.spark.sql.delta.{DeltaLog, Snapshot}
@@ -29,7 +28,6 @@ import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.{Cast, Expression, GenericInternalRow, Literal}
 import org.apache.spark.sql.execution.datasources._
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.util._
 
 /**
  * A [[FileIndex]] that generates the list of files managed by the Tahoe protocol.
@@ -40,9 +38,6 @@ abstract class TahoeFileIndex(
     val path: Path) extends FileIndex {
 
   def tableVersion: Long = deltaLog.snapshot.version
-
-  /** Get a snapshot of the Delta table. */
-  def getSnapshot(stalenessAcceptable: Boolean): Snapshot
 
   override def rootPaths: Seq[Path] = path :: Nil
 
@@ -124,8 +119,11 @@ case class TahoeLogFileIndex(
 
   override def tableVersion: Long = versionToUse.getOrElse(deltaLog.snapshot.version)
 
-  override def getSnapshot(stalenessAcceptable: Boolean): Snapshot = {
-    versionToUse.map(deltaLog.getSnapshotAt(_)).getOrElse(deltaLog.update(stalenessAcceptable))
+  private lazy val historicalSnapshotOpt: Option[Snapshot] =
+    versionToUse.map(deltaLog.getSnapshotAt(_))
+
+  def getSnapshot(stalenessAcceptable: Boolean): Snapshot = {
+    historicalSnapshotOpt.getOrElse(deltaLog.update(stalenessAcceptable))
   }
 
   override def matchingFiles(
@@ -154,6 +152,9 @@ case class TahoeLogFileIndex(
   override def hashCode: scala.Int = {
     31 * path.hashCode() + partitionFilters.hashCode()
   }
+
+  override def partitionSchema: StructType = historicalSnapshotOpt.map(_.metadata.partitionSchema)
+    .getOrElse(super.partitionSchema)
 }
 
 /**
@@ -170,10 +171,6 @@ class TahoeBatchFileIndex(
   extends TahoeFileIndex(spark, deltaLog, path) {
 
   override def tableVersion: Long = snapshot.version
-
-  override def getSnapshot(stalenessAcceptable: Boolean): Snapshot = {
-    snapshot
-  }
 
   override def matchingFiles(
       partitionFilters: Seq[Expression],
